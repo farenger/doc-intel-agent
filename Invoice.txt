@@ -1,0 +1,13 @@
+Invoice #1234
+Date: 20th April 2025
+Vendor: ABC Electronics
+Customer: Anupam Manas
+
+Items:
+- Laptop: Rs 65,000
+- Mouse: Rs 1,500
+- Keyboard: Rs 2,000
+
+Total Amount: Rs 68,500
+Payment Status: Unpaid
+Due Date: 30th April 2025
