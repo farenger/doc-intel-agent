@@ -142,8 +142,9 @@ def validate_document_tool(extracted_json: str, source: str) -> str:
     # Add source flags
     result["source"] = source
     result["requires_human_review"] = source == "ocr"
-    if source == "ocr":
-        result["review_reason"] = "Handwritten/scanned document - amounts need human verification"
+    if "ocr" in extracted_json.lower() or result.get("source") == "ocr":
+        result["requires_human_review"] = True
+        result["review_reason"] = "OCR document - all values need human verification"
     
     # Add validation status
     if errors:
@@ -159,41 +160,72 @@ def validate_document_tool(extracted_json: str, source: str) -> str:
 
 @tool
 def check_consistency_tool(extracted_json: str) -> str:
-    """Check if document totals are consistent with line items.
-    Returns JSON string with consistency check results."""
+    """Check if document totals and calculations are consistent."""
     
     result = json.loads(extracted_json)
     
-    # Check if line items sum matches total
-    if result.get("description") or result.get("items") or result.get("transactions"):
-        items = result.get("description") or result.get("items") or result.get("transactions")
-        
+    # Try invoice check
+    items = (result.get("items") or 
+             result.get("description") or 
+             result.get("services") or 
+             result.get("line_items") or [])
+    
+    if items and isinstance(items, list):
         try:
             amounts = []
             for item in items:
                 if isinstance(item, dict):
-                    amount = item.get("amount") or item.get("debit") or 0
+                    amount = item.get("amount") or item.get("rate") or item.get("price") or 0
                     if amount:
-                        clean = str(amount).replace(",","").replace("Rs","").strip()
-                        if clean.replace(".","").isdigit():
-                            amounts.append(float(clean))
+                        clean = str(amount).replace(",","").replace("Rs","").replace("/","").strip()
+                        digits = ''.join(filter(str.isdigit, clean))
+                        if digits:
+                            amounts.append(float(digits))
             
             if amounts and result.get("total_amount"):
                 calculated_total = sum(amounts)
-                stated_total = float(str(result["total_amount"]).replace(",","").replace("Rs","").strip())
-                
-                if abs(calculated_total - stated_total) > 1:
-                    result["consistency_check"] = "failed"
-                    result["consistency_note"] = f"Line items sum ({calculated_total}) doesn't match total ({stated_total})"
+                stated_total_str = str(result["total_amount"]).replace(",","").replace("Rs","").strip()
+                digits = ''.join(filter(str.isdigit, stated_total_str))
+                if digits:
+                    stated_total = float(digits)
+                    if abs(calculated_total - stated_total) > 10:
+                        result["consistency_check"] = "failed"
+                        result["consistency_note"] = f"Items sum ({calculated_total}) doesn't match total ({stated_total})"
+                    else:
+                        result["consistency_check"] = "passed"
+                        result["consistency_note"] = "Total matches line items"
                 else:
-                    result["consistency_check"] = "passed"
+                    result["consistency_check"] = "skipped"
             else:
                 result["consistency_check"] = "skipped"
-                
-        except:
+                result["consistency_note"] = "Could not extract amounts from items"
+        except Exception as e:
             result["consistency_check"] = "skipped"
+            result["consistency_note"] = f"Check failed: {str(e)}"
+    
+    # Try bank statement check
+    elif result.get("transactions") and result.get("closing_balance"):
+        try:
+            last_transaction = result["transactions"][-1]
+            last_balance = ''.join(filter(str.isdigit, str(last_transaction.get("balance",""))))
+            closing_balance = ''.join(filter(str.isdigit, str(result["closing_balance"])))
+            
+            if last_balance and closing_balance:
+                if abs(float(last_balance) - float(closing_balance)) <= 10:
+                    result["consistency_check"] = "passed"
+                    result["consistency_note"] = "Last transaction balance matches closing balance"
+                else:
+                    result["consistency_check"] = "failed"
+                    result["consistency_note"] = f"Balance mismatch: {last_balance} vs {closing_balance}"
+            else:
+                result["consistency_check"] = "skipped"
+        except Exception as e:
+            result["consistency_check"] = "skipped"
+            result["consistency_note"] = f"Check failed: {str(e)}"
+    
     else:
         result["consistency_check"] = "skipped"
+        result["consistency_note"] = "No verifiable totals found"
     
     return json.dumps(result, indent=2)
 
